@@ -38,7 +38,7 @@ Handles forwarded export detection (returns null for forwarded exports).
 ## Use
 
 ```rust
-use rspe::reflective_loader_with_args;
+use rust_pe::reflective_loader_with_args;
 
 fn main() {
     let data = include_bytes!(r#".\example.exe"#);
