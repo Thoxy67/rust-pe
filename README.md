@@ -1,4 +1,4 @@
-# rspe
+# rust-pe
 
 Reflective PE loader library in pure Rust (`no_std`). Loads native and .NET assemblies from memory.
 
