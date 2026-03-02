@@ -1,6 +1,7 @@
 use core::ffi::c_void;
 use core::ptr;
 
+use crate::PeError;
 use crate::utils;
 use crate::windows::*;
 
@@ -10,9 +11,7 @@ fn empty_variant() -> VARIANT {
         w_reserved1: 0,
         w_reserved2: 0,
         w_reserved3: 0,
-        data: VariantData {
-            ptr_val: ptr::null_mut(),
-        },
+        data: VariantData { _pad: [0; 2] },
     }
 }
 
@@ -123,20 +122,20 @@ unsafe fn create_args_safearray(
 /// # Safety
 ///
 /// Calls Windows COM APIs, loads the CLR, and executes arbitrary .NET code.
-pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) {
+pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) -> Result<(), PeError> {
     // --- Dynamic-load mscoree.dll and oleaut32.dll ---
     let mscoree = LoadLibraryA(b"mscoree.dll\0".as_ptr());
     if mscoree.is_null() {
-        panic!(".NET: failed to load mscoree.dll");
+        return Err(PeError::DotNetError("failed to load mscoree.dll"));
     }
     let oleaut32 = LoadLibraryA(b"oleaut32.dll\0".as_ptr());
     if oleaut32.is_null() {
-        panic!(".NET: failed to load oleaut32.dll");
+        return Err(PeError::DotNetError("failed to load oleaut32.dll"));
     }
 
     let p_clr_create = GetProcAddress(mscoree, b"CLRCreateInstance\0".as_ptr());
     if p_clr_create.is_null() {
-        panic!(".NET: CLRCreateInstance not found");
+        return Err(PeError::DotNetError("CLRCreateInstance not found"));
     }
     let clr_create_instance: FnCLRCreateInstance = core::mem::transmute(p_clr_create);
 
@@ -156,7 +155,7 @@ pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) {
     // --- Extract .NET version from PE metadata ---
     let version = match utils::get_dotnet_version(buffer) {
         Some(v) => v,
-        None => panic!(".NET: could not extract runtime version from PE metadata"),
+        None => return Err(PeError::DotNetError("could not extract runtime version from PE metadata")),
     };
     let version_wide = utils::ascii_to_wide(version);
 
@@ -164,7 +163,7 @@ pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) {
     let mut meta_host: *mut c_void = ptr::null_mut();
     let hr = clr_create_instance(&CLSID_CLR_META_HOST, &IID_ICLR_META_HOST, &mut meta_host);
     if hr < 0 || meta_host.is_null() {
-        panic!(".NET: CLRCreateInstance failed (0x{:08X})", hr as u32);
+        return Err(PeError::DotNetError("CLRCreateInstance failed"));
     }
 
     let mut runtime_info: *mut c_void = ptr::null_mut();
@@ -177,7 +176,7 @@ pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) {
     );
     if hr < 0 || runtime_info.is_null() {
         release_com(meta_host);
-        panic!(".NET: GetRuntime failed (0x{:08X})", hr as u32);
+        return Err(PeError::DotNetError("GetRuntime failed"));
     }
 
     let mut runtime_host: *mut c_void = ptr::null_mut();
@@ -191,10 +190,7 @@ pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) {
     if hr < 0 || runtime_host.is_null() {
         release_com(runtime_info);
         release_com(meta_host);
-        panic!(
-            ".NET: GetInterface for ICorRuntimeHost failed (0x{:08X})",
-            hr as u32
-        );
+        return Err(PeError::DotNetError("GetInterface for ICorRuntimeHost failed"));
     }
 
     // --- Start CLR and get default AppDomain ---
@@ -204,7 +200,7 @@ pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) {
         release_com(runtime_host);
         release_com(runtime_info);
         release_com(meta_host);
-        panic!(".NET: ICorRuntimeHost::Start failed (0x{:08X})", hr as u32);
+        return Err(PeError::DotNetError("ICorRuntimeHost::Start failed"));
     }
 
     let mut app_domain_unk: *mut c_void = ptr::null_mut();
@@ -213,7 +209,7 @@ pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) {
         release_com(runtime_host);
         release_com(runtime_info);
         release_com(meta_host);
-        panic!(".NET: GetDefaultDomain failed (0x{:08X})", hr as u32);
+        return Err(PeError::DotNetError("GetDefaultDomain failed"));
     }
 
     // QI for _AppDomain
@@ -225,10 +221,7 @@ pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) {
         release_com(runtime_host);
         release_com(runtime_info);
         release_com(meta_host);
-        panic!(
-            ".NET: QueryInterface for _AppDomain failed (0x{:08X})",
-            hr as u32
-        );
+        return Err(PeError::DotNetError("QueryInterface for _AppDomain failed"));
     }
 
     // --- Load assembly from byte array ---
@@ -238,7 +231,7 @@ pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) {
         release_com(runtime_host);
         release_com(runtime_info);
         release_com(meta_host);
-        panic!(".NET: failed to create SafeArray for assembly bytes");
+        return Err(PeError::DotNetError("failed to create SafeArray for assembly bytes"));
     }
 
     let ad_vtbl = *(app_domain as *const *const AppDomainVtbl);
@@ -250,7 +243,7 @@ pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) {
         release_com(runtime_host);
         release_com(runtime_info);
         release_com(meta_host);
-        panic!(".NET: _AppDomain::Load_3 failed (0x{:08X})", hr as u32);
+        return Err(PeError::DotNetError("_AppDomain::Load_3 failed"));
     }
 
     // --- Get entry point MethodInfo ---
@@ -263,19 +256,31 @@ pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) {
         release_com(runtime_host);
         release_com(runtime_info);
         release_com(meta_host);
-        panic!(
-            ".NET: _Assembly::get_EntryPoint failed (0x{:08X})",
-            hr as u32
-        );
+        return Err(PeError::DotNetError("_Assembly::get_EntryPoint failed"));
     }
 
-    // --- Invoke entry point ---
+    // --- Detect entry point parameter count ---
     let mi_vtbl = *(method_info as *const *const MethodInfoVtbl);
 
+    let mut params_info: *mut SAFEARRAY = ptr::null_mut();
+    let hr_gp = ((*mi_vtbl).GetParameters)(method_info, &mut params_info);
+    let has_params = if hr_gp >= 0 && !params_info.is_null() {
+        let count = (*params_info).rgsabound[0].c_elements;
+        sa_destroy(params_info);
+        count > 0
+    } else {
+        true // default to assuming parameters for backwards compat
+    };
+
+    // --- Invoke entry point ---
     let obj = empty_variant();
     let mut ret_val = empty_variant();
 
-    let params_sa = create_args_safearray(args, sa_create, sa_access, sa_unaccess, sys_alloc);
+    let params_sa = if has_params {
+        create_args_safearray(args, sa_create, sa_access, sa_unaccess, sys_alloc)
+    } else {
+        ptr::null_mut()
+    };
 
     let hr = ((*mi_vtbl).Invoke_3)(method_info, obj, params_sa, &mut ret_val);
 
@@ -291,6 +296,8 @@ pub unsafe fn execute_dotnet_assembly(buffer: &[u8], args: &[&str]) {
     release_com(meta_host);
 
     if hr < 0 {
-        panic!(".NET: _MethodInfo::Invoke_3 failed (0x{:08X})", hr as u32);
+        return Err(PeError::DotNetError("_MethodInfo::Invoke_3 failed"));
     }
+
+    Ok(())
 }

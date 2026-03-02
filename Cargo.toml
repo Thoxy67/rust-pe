@@ -10,4 +10,9 @@ repository = "https://github.com/Thoxy67/rspe/"
 documentation = "https://docs.rs/rspe"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["dotnet"]
+dotnet = []
+
 [dependencies]
+base64 = "*"

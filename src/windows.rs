@@ -23,9 +23,12 @@ pub const PAGE_EXECUTE_READWRITE: PAGE_PROTECTION_FLAGS = 0x40;
 // --- PE directory entry indices ---
 pub const IMAGE_DIRECTORY_ENTRY_EXPORT: usize = 0;
 pub const IMAGE_DIRECTORY_ENTRY_IMPORT: usize = 1;
+pub const IMAGE_DIRECTORY_ENTRY_RESOURCE: usize = 2;
 pub const IMAGE_DIRECTORY_ENTRY_EXCEPTION: usize = 3;
 pub const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
 pub const IMAGE_DIRECTORY_ENTRY_TLS: usize = 9;
+pub const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG: usize = 10;
+pub const IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT: usize = 11;
 pub const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT: usize = 13;
 pub const IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR: usize = 14;
 
@@ -395,13 +398,13 @@ pub struct VARIANT {
     pub data: VariantData,
 }
 
-/// Union portion of VARIANT — 16 bytes on x64 (largest member is BRECORD: two pointers).
+/// Union portion of VARIANT — 16 bytes on x64 (two pointers), 8 bytes on x86.
 #[repr(C)]
 pub union VariantData {
     pub ptr_val: *mut c_void,
     pub uint_val: usize,
     pub int_val: isize,
-    pub _pad: [u8; 16],
+    pub _pad: [usize; 2],
 }
 
 pub const VT_EMPTY: u16 = 0;
@@ -490,10 +493,15 @@ pub struct AssemblyVtbl {
         unsafe extern "system" fn(this: *mut c_void, pp_method_info: *mut *mut c_void) -> HRESULT,
 }
 
-/// _MethodInfo vtable — IDispatch(7) + 30 methods + Invoke_3 at slot 37
+/// _MethodInfo vtable — GetParameters at slot 18, Invoke_3 at slot 37
 #[repr(C)]
 pub struct MethodInfoVtbl {
-    pub _slots: [usize; 37],
+    pub _pre_get_params: [usize; 18], // slots 0-17
+    pub GetParameters: unsafe extern "system" fn(
+        this: *mut c_void,
+        pp_ret_val: *mut *mut SAFEARRAY,
+    ) -> HRESULT,
+    pub _post_get_params: [usize; 18], // slots 19-36
     pub Invoke_3: unsafe extern "system" fn(
         this: *mut c_void,
         obj: VARIANT,
@@ -572,3 +580,98 @@ pub type FnSafeArrayDestroy = unsafe extern "system" fn(psa: *mut SAFEARRAY) -> 
 
 /// Function pointer type for SysAllocString
 pub type FnSysAllocString = unsafe extern "system" fn(psz: *const u16) -> *mut u16;
+
+// ============================================================================
+// Debug logging
+// ============================================================================
+
+#[link(name = "kernel32")]
+extern "system" {
+    pub fn OutputDebugStringA(lpOutputString: *const u8);
+}
+
+// ============================================================================
+// CFG (Control Flow Guard)
+// ============================================================================
+
+pub const IMAGE_GUARD_CF_INSTRUMENTED: u32 = 0x0000_0100;
+pub const IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT: u32 = 0x0000_0400;
+pub const CFG_CALL_TARGET_VALID: usize = 0x0000_0001;
+
+#[repr(C)]
+pub struct CFG_CALL_TARGET_INFO {
+    pub Offset: usize,
+    pub Flags: usize,
+}
+
+pub type FnSetProcessValidCallTargets = unsafe extern "system" fn(
+    hProcess: *mut c_void,
+    VirtualAddress: *mut c_void,
+    RegionSize: usize,
+    NumberOfOffsets: u32,
+    OffsetInformation: *mut CFG_CALL_TARGET_INFO,
+) -> i32;
+
+// ============================================================================
+// Activation Context (SxS)
+// ============================================================================
+
+pub const ACTCTX_FLAG_RESOURCE_NAME_VALID: u32 = 0x0000_0008;
+pub const ACTCTX_FLAG_HMODULE_VALID: u32 = 0x0000_0080;
+pub const INVALID_HANDLE_VALUE: *mut c_void = -1isize as *mut c_void;
+
+#[repr(C)]
+pub struct ACTCTXW {
+    pub cbSize: u32,
+    pub dwFlags: u32,
+    pub lpSource: *const u16,
+    pub wProcessorArchitecture: u16,
+    pub wLangId: u16,
+    pub lpAssemblyDirectory: *const u16,
+    pub lpResourceName: *const u16,
+    pub lpApplicationName: *const u16,
+    pub hModule: *mut c_void,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    pub fn CreateActCtxW(pActCtx: *mut ACTCTXW) -> *mut c_void;
+    pub fn ActivateActCtx(hActCtx: *mut c_void, lpCookie: *mut usize) -> i32;
+    pub fn DeactivateActCtx(dwFlags: u32, ulCookie: usize) -> i32;
+    pub fn ReleaseActCtx(hActCtx: *mut c_void);
+    pub fn GetCurrentProcess() -> *mut c_void;
+}
+
+// ============================================================================
+// API Set Schema
+// ============================================================================
+
+#[repr(C)]
+pub struct API_SET_NAMESPACE {
+    pub Version: u32,
+    pub Size: u32,
+    pub Flags: u32,
+    pub Count: u32,
+    pub EntryOffset: u32,
+    pub HashOffset: u32,
+    pub HashFactor: u32,
+}
+
+#[repr(C)]
+pub struct API_SET_NAMESPACE_ENTRY {
+    pub Flags: u32,
+    pub NameOffset: u32,
+    pub NameLength: u32,
+    pub HashedLength: u32,
+    pub ValueOffset: u32,
+    pub ValueCount: u32,
+}
+
+#[repr(C)]
+pub struct API_SET_VALUE_ENTRY {
+    pub Flags: u32,
+    pub NameOffset: u32,
+    pub NameLength: u32,
+    pub ValueOffset: u32,
+    pub ValueLength: u32,
+}

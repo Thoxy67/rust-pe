@@ -4,7 +4,7 @@
     windows_subsystem = "windows"
 )]
 
-use rust_pe::{reflective_loader, utils::check_dotnet};
+use rust_pe::reflective_loader_with_args;
 
 // Main function
 fn main() {
@@ -14,11 +14,9 @@ fn main() {
     #[cfg(target_arch = "x86")]
     let data = include_bytes!(r#"putty_x86.exe"#);
 
-    // Check if the file is a .NET assembly (no cloning needed — uses &[u8])
-    if !check_dotnet(data) {
-        // If it is not, use the reflective loader (no cloning needed — uses &[u8])
-        unsafe {
-            reflective_loader(data);
-        };
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    unsafe {
+        let _ = reflective_loader_with_args(data, &arg_refs);
     }
 }
